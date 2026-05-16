@@ -1,0 +1,24 @@
+CREATE DATABASE IF NOT EXISTS dhl_incidents;
+USE dhl_incidents;
+
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS incidents (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    incident_ref_id VARCHAR(50) UNIQUE NOT NULL,
+    issue_summary TEXT NOT NULL,
+    department VARCHAR(100) NOT NULL,
+    priority VARCHAR(50) NOT NULL,
+    recommended_action TEXT,
+    progress_history TEXT,
+    status VARCHAR(50) DEFAULT 'Open',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+

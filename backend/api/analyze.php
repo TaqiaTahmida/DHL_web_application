@@ -1,0 +1,219 @@
+<?php
+// backend/api/analyze.php
+require_once 'cors.php';
+require_once '../config.php';
+require_once '../jwt_helper.php';
+
+header('Content-Type: application/json');
+
+$headers = getallheaders();
+$authHeader = $headers['Authorization'] ?? '';
+$jwt = str_replace('Bearer ', '', $authHeader);
+
+$user = JWT::decode($jwt);
+
+if (!$user) {
+    http_response_code(401);
+    echo json_encode(["status" => "error", "message" => "Unauthorized"]);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    echo json_encode(["status" => "error", "message" => "Method not allowed"]);
+    exit;
+}
+
+$data = json_decode(file_get_contents("php://input"), true);
+$rawText = $data['raw_text'] ?? '';
+
+if (empty($rawText)) {
+    echo json_encode(["status" => "error", "message" => "Raw text is required"]);
+    exit;
+}
+
+if (empty($gemini_api_key) || $gemini_api_key === 'YOUR_GEMINI_API_KEY_HERE') {
+    echo json_encode(["status" => "error", "message" => "Gemini API key is not configured in backend/config.php"]);
+    exit;
+}
+
+$url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $gemini_api_key;
+
+
+$promptText = <<<'EOT'
+You are an expert DHL Incident Management AI.
+Your task is to analyze unstructured incident data from emails, WhatsApp chats, logs, warehouse notes, call transcripts, support tickets, or operational records and extract the real operational issue into a strictly formatted JSON object.
+You must:
+Identify the actual root incident
+Ignore irrelevant wording or emotional language
+Merge related evidence from multiple sources into one coherent incident
+Infer missing operational context where reasonable
+Output ONLY valid JSON with no explanations, markdown, or extra text
+The output JSON must contain these exact fields:
+{
+ "incident_ref_id": "",
+ "issue_summary": "",
+ "department": "",
+ "priority": "",
+ "recommended_action": "",
+ "progress_history": ""
+}
+Field Rules:
+"incident_ref_id"
+Generate a unique incident reference ID
+Format: DHL-INC-YYYYMMDD-XXXX
+XXXX should be a random 4-digit number
+"issue_summary"
+1–2 concise sentences
+Describe the real operational issue clearly
+Include important business impact if present
+"department"
+ Must be exactly ONE of:
+"IT"
+"Operations"
+"HR"
+"Finance"
+"Customer Service"
+Guidelines:
+Delivery failures, damaged parcels, routing, warehouse mistakes → Operations
+Refund/payment/COD/billing issues → Finance
+System outages/software/login/scanner/network → IT
+Staff misconduct/payroll/internal employee disputes → HR
+Complaint handling/customer communication failures → Customer Service
+Choose the department most responsible for resolving the root issue.
+"priority"
+ Must be exactly ONE of:
+"Low"
+"Medium"
+"High"
+"Critical"
+Priority Guidelines:
+Critical → financial loss, legal risk, lost parcel, major escalation, public/social media threat
+High → customer severely impacted, damaged shipment, urgent refund, repeated failures
+Medium → operational issue with manageable impact
+Low → informational/minor issue/no urgent impact
+"recommended_action"
+1 concise sentence
+Provide the next operational step to resolve the incident
+"progress_history"
+1–2 concise sentences
+Summarize the sequence of events chronologically
+Include escalation failures or missed actions if relevant
+Additional Rules:
+Output STRICT JSON only
+Do not include markdown
+Do not include explanations
+Do not invent facts not supported by evidence
+Combine evidence across all sources into one incident
+Preserve shipment IDs, dates, and monetary values when available
+Use professional enterprise language
+--- EXAMPLES ---
+INPUT:
+ [Customer email dated 5 May requesting urgent address change for shipment MY44567789. Original address was residential in Shah Alam, new address communicated via email is customer’s office in PJ. Email subject reads: “PLEASE UPDATE DELIVERY ADDRESS ASAP”.
+ System shows address update was never applied. Parcel delivered to old address on 6 May and signed by unknown person. WhatsApp message from recipient says, “I already told agent yesterday to change address, why still sent there???”
+ Phone log from support agent indicates a call on 5 May where agent noted “address change requested – escalate to ops”. No ticket was created.
+ Warehouse handwritten note: “Address updated verbally?? Not in system.”
+ Customer now claims parcel missing and DHL responsible. Customer also asks why email was ignored. Data spread across email, WhatsApp, call notes, and physical handwritten notes.]
+OUTPUT:
+ {
+ "incident_ref_id": "DHL-INC-20260516-4821",
+ "issue_summary": "Shipment MY44567789 was delivered to the old address despite the customer requesting an address update before delivery. The address change request was not properly recorded or escalated, resulting in a potentially lost parcel.",
+ "department": "Operations",
+ "priority": "Critical",
+ "recommended_action": "Initiate a delivery investigation, attempt parcel recovery, and implement the requested address update workflow with mandatory ticket creation.",
+ "progress_history": "Customer requested an address change on 5 May through email and phone support, but no official ticket was created. The parcel was delivered to the old address on 6 May, after which the customer reported the parcel missing and escalated the complaint."
+ }
+INPUT:
+ [Customer WhatsApp message complains courier collected RM450 COD instead of RM250 shown on invoice. Customer attached photo of handwritten receipt.
+ Email from finance later says system reflects RM450 COD amount.
+ Warehouse note: “COD sticker unclear, handwritten?”
+ Caller wants refund of extra RM200 urgently. No clarity on who entered wrong COD amount.]
+OUTPUT:
+ {
+ "incident_ref_id": "DHL-INC-20260516-7314",
+ "issue_summary": "Customer was overcharged RM200 for COD collection after RM450 was collected instead of the RM250 stated on the invoice. The discrepancy may have originated from unclear or incorrectly labeled COD information.",
+ "department": "Finance",
+ "priority": "High",
+ "recommended_action": "Verify the original COD entry, process the RM200 refund if confirmed, and audit COD labeling procedures to prevent recurrence.",
+ "progress_history": "Customer reported the incorrect COD collection through WhatsApp and provided a receipt as evidence. Finance later confirmed the system reflected RM450, while warehouse notes indicated the COD sticker may have been unclear or handwritten."
+ }
+INPUT:
+ [Incoming email from customer on 22 March with subject: “Damaged parcel received – unacceptable condition”.
+Customer attaches 4 images showing a crushed DHL box, torn side panels, and bubble wrap exposed. Product inside appears to be a coffee machine (customer did not confirm brand).
+Email body states shipment MY987623400 arrived two days late and external box was already damaged when handed over. Customer did not reject delivery because courier mentioned “cannot take back once scanned”. After opening the box, customer noticed water leakage marks and dents on the machine casing.
+Internal Teams chat between delivery partner and hub supervisor mentions: “Package already dented when offloaded from linehaul, maybe stacking issue.” Another message says, “No exception scanned at hub, driver might have forgotten.”
+Call center notes say customer demanded replacement or refund and is threatening to post photos on social media. Agent marked case as “damage – investigation needed” but forgot to tag the insurance/claims team.
+Handwritten warehouse remark uploaded later reads: “Inbound pallet unstable, one carton collapsed, taped back.” No pallet ID referenced.
+Issue involves late delivery, damaged item, missing exception scan, and complaint escalation. Multiple teams involved but no clear timeline or responsible department. Priority unclear.]
+OUTPUT:
+ {
+ "incident_ref_id": "DHL-INC-20260516-9152",
+ "issue_summary": "Shipment MY987623400 was delivered late and in damaged condition, with evidence suggesting mishandling during warehouse or linehaul operations. Operational failures included missing exception scans and delayed escalation to the claims process.",
+ "department": "Operations",
+ "priority": "Critical",
+ "recommended_action": "Launch a full damage investigation, coordinate with the claims team for compensation processing, and review warehouse stacking and exception scan compliance procedures.",
+ "progress_history": "The customer reported the damaged parcel on 22 March with supporting images and requested compensation. Internal discussions later revealed the package may have been damaged during offloading, while warehouse records indicated pallet instability and missing exception handling."
+ }
+--- END OF EXAMPLES ---
+Analyze the following incident and return STRICT JSON ONLY:
+EOT;
+
+$promptText .= "\n" . $rawText;
+
+$postData = [
+    "contents" => [
+        [
+            "parts" => [
+                ["text" => $promptText]
+            ]
+        ]
+    ],
+    "generationConfig" => [
+        "responseMimeType" => "application/json"
+    ]
+];
+
+$ch = curl_init($url);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_POST, true);
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($postData));
+
+// Note: If you encounter SSL errors on local XAMPP, you might need:
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); 
+
+$response = curl_exec($ch);
+$curlError = curl_error($ch);
+$httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($response === false) {
+    echo json_encode(["status" => "error", "message" => "cURL Error: " . $curlError]);
+    exit;
+}
+
+if ($httpcode == 200) {
+    $result = json_decode($response, true);
+    if (isset($result['candidates'][0]['content']['parts'][0]['text'])) {
+        $aiText = $result['candidates'][0]['content']['parts'][0]['text'];
+        
+        // Strip markdown formatting if gemini-pro wraps the JSON
+        $aiTextClean = str_replace('```json', '', $aiText);
+        $aiTextClean = str_replace('```', '', $aiTextClean);
+        $aiTextClean = trim($aiTextClean);
+        
+        $aiData = json_decode($aiTextClean, true);
+        if ($aiData) {
+            echo json_encode(["status" => "success", "data" => $aiData]);
+        } else {
+             echo json_encode(["status" => "error", "message" => "Failed to parse AI JSON output", "raw_output" => $aiText]);
+        }
+    } else {
+        echo json_encode(["status" => "error", "message" => "Invalid AI response structure"]);
+    }
+} else {
+    $errorData = json_decode($response, true);
+    $apiMsg = $errorData['error']['message'] ?? 'Unknown Gemini API error';
+    echo json_encode(["status" => "error", "message" => "Gemini API Error ($httpcode): " . $apiMsg, "details" => $errorData]);
+}
+?>
