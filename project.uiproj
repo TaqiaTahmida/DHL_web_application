@@ -1,0 +1,6 @@
+{
+  "Name": "DHL_Incidents",
+  "ProjectType": "Process",
+  "Description": "Process that reads DHL incident files from a google drive, format it using AI, and upload it to a website after logging in to it",
+  "MainFile": "Main.xaml"
+}
